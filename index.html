@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Qwen3 AKV Interface</title>
+</head>
+<body>
+    <h1>Qwen3 AKV Prompt Interface</h1>
+    <p>OpenAI-compatible Attention KV (AKV) Cache Web Client</p>
+    <hr>
+
+    <fieldset>
+        <legend>Connection & Settings</legend>
+        <p>
+            <label for="serverUrl">Server URL:</label><br>
+            <input type="text" id="serverUrl" value="http://127.0.0.1:8000" size="40">
+        </p>
+        <p>
+            <label for="model">Model ID:</label><br>
+            <input type="text" id="model" value="qwen3-4b" size="20">
+        </p>
+        <p>
+            <label for="temperature">Temperature:</label>
+            <input type="number" id="temperature" value="0.7" min="0" max="2" step="0.1">
+            &nbsp;&nbsp;
+            <label for="maxTokens">Max Tokens:</label>
+            <input type="number" id="maxTokens" value="512" min="1" max="4096" step="32">
+            &nbsp;&nbsp;
+            <label>
+                <input type="checkbox" id="enableThinking">
+                Enable Thinking (&lt;think&gt;)
+            </label>
+        </p>
+        <p>
+            <button type="button" id="resetCacheBtn">Reset Server KV Cache</button>
+            <button type="button" id="clearLogBtn">Clear Chat Log</button>
+        </p>
+    </fieldset>
+
+    <br>
+
+    <fieldset>
+        <legend>Prompt Input</legend>
+        <p>
+            <label for="systemPrompt">System Message:</label><br>
+            <input type="text" id="systemPrompt" value="You are a helpful assistant." size="60">
+        </p>
+        <p>
+            <label for="userPrompt">User Prompt:</label><br>
+            <textarea id="userPrompt" rows="6" cols="80" placeholder="Type your prompt here..."></textarea>
+        </p>
+        <p>
+            <button type="button" id="sendBtn">Send Prompt</button>
+            &nbsp;&nbsp;
+            <span id="status">Status: Ready</span>
+        </p>
+    </fieldset>
+
+    <br>
+
+    <fieldset>
+        <legend>Completion Output</legend>
+        <pre id="output">No completions yet.</pre>
+    </fieldset>
+
+    <script>
+        const messages = [];
+
+        const serverUrlInput = document.getElementById("serverUrl");
+        const modelInput = document.getElementById("model");
+        const temperatureInput = document.getElementById("temperature");
+        const maxTokensInput = document.getElementById("maxTokens");
+        const enableThinkingInput = document.getElementById("enableThinking");
+        const systemPromptInput = document.getElementById("systemPrompt");
+        const userPromptInput = document.getElementById("userPrompt");
+        const sendBtn = document.getElementById("sendBtn");
+        const resetCacheBtn = document.getElementById("resetCacheBtn");
+        const clearLogBtn = document.getElementById("clearLogBtn");
+        const statusEl = document.getElementById("status");
+        const outputEl = document.getElementById("output");
+
+        function updateOutput() {
+            if (messages.length === 0) {
+                outputEl.textContent = "No completions yet.";
+                return;
+            }
+
+            let text = "";
+            for (let i = 0; i < messages.length; i++) {
+                const msg = messages[i];
+                const roleUpper = msg.role.toUpperCase();
+                text += "=== [" + roleUpper + "] ===\n" + msg.content + "\n\n";
+            }
+            outputEl.textContent = text;
+        }
+
+        async function sendPrompt() {
+            const prompt = userPromptInput.value.trim();
+            if (!prompt) {
+                alert("Please enter a prompt.");
+                return;
+            }
+
+            const baseUrl = serverUrlInput.value.replace(/\/+$/, "");
+            const endpoint = baseUrl + "/v1/chat/completions";
+
+            if (messages.length === 0) {
+                const sysContent = systemPromptInput.value.trim();
+                if (sysContent) {
+                    messages.push({ role: "system", content: sysContent });
+                }
+            }
+
+            messages.push({ role: "user", content: prompt });
+            userPromptInput.value = "";
+            updateOutput();
+
+            sendBtn.disabled = true;
+            statusEl.textContent = "Status: Generating completion...";
+
+            const payload = {
+                model: modelInput.value.trim() || "qwen3-4b",
+                messages: messages,
+                temperature: parseFloat(temperatureInput.value) || 0.7,
+                max_tokens: parseInt(maxTokensInput.value, 10) || 512,
+                enable_thinking: enableThinkingInput.checked
+            };
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error("HTTP " + response.status + ": " + errorText);
+                }
+
+                const data = await response.json();
+                const choice = data.choices && data.choices[0];
+                const reply = choice && choice.message ? choice.message.content : "";
+
+                messages.push({ role: "assistant", content: reply });
+                updateOutput();
+
+                let statsText = "Status: Done";
+                if (data.usage) {
+                    statsText += " | Prefill: " + data.usage.prompt_tokens + " tok" +
+                                 " | Completion: " + data.usage.completion_tokens + " tok" +
+                                 " | Active KV: " + (data.usage.active_kv_tokens || "-") + " tok";
+                }
+                statusEl.textContent = statsText;
+            } catch (err) {
+                statusEl.textContent = "Status: Error - " + err.message;
+                messages.push({ role: "assistant", content: "[Error: " + err.message + "]" });
+                updateOutput();
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        async function resetCache() {
+            const baseUrl = serverUrlInput.value.replace(/\/+$/, "");
+            const endpoint = baseUrl + "/v1/cache/reset";
+
+            statusEl.textContent = "Status: Resetting KV cache...";
+            try {
+                const response = await fetch(endpoint, {
+                    method: "POST"
+                });
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error("HTTP " + response.status + ": " + errorText);
+                }
+                messages.length = 0;
+                updateOutput();
+                statusEl.textContent = "Status: KV Cache and conversation reset.";
+            } catch (err) {
+                statusEl.textContent = "Status: Reset error - " + err.message;
+            }
+        }
+
+        function clearLog() {
+            messages.length = 0;
+            updateOutput();
+            statusEl.textContent = "Status: Log cleared locally (server KV cache unchanged).";
+        }
+
+        sendBtn.addEventListener("click", sendPrompt);
+        resetCacheBtn.addEventListener("click", resetCache);
+        clearLogBtn.addEventListener("click", clearLog);
+
+        userPromptInput.addEventListener("keydown", function(e) {
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                sendPrompt();
+            }
+        });
+    </script>
+</body>
+</html>
